@@ -9,15 +9,7 @@ import importlib.resources
 from tvm_valuetypes.cell import deserialize_cell_from_object
 import warnings, traceback
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', '-p', default=8000, type=int)
-    parser.add_argument('--getmethods', '-g', default=False, type=bool)
-    parser.add_argument('--jsonrpc', '-j', default=True, type=bool)
-    args = parser.parse_args()
-    port = args.port
-    routes = web.RouteTableDef()
-    default_config = {
+default_config = {
 
         "liteservers": [
           {
@@ -42,11 +34,28 @@ def main():
         }
       }
 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', '-p', default=8000, type=int)
+    parser.add_argument('--getmethods', '-g', default=False, type=bool)
+    parser.add_argument('--jsonrpc', '-j', default=True, type=bool)
+    parser.add_argument('--liteserverconfig', '-l', default=None, type=str)
+    args = parser.parse_args()
+    port = args.port
+    routes = web.RouteTableDef()
+    lite_server_config = default_config
+    if args.liteserverconfig:
+      try:
+        with open(args.liteserverconfig, "r") as f:
+          lite_server_config = json.loads(f.read())
+          print(json.dumps(lite_server_config, indent=2))
+      except Exception as e:
+        print("Can't read provided lite_server_config (%s): %s", args.liteserverconfig, str(e))
 
     keystore= os.path.expanduser('ton_keystore')
     if not os.path.exists(keystore):
         os.makedirs(keystore)
-    tonlib = TonlibClient(default_config, keystore=keystore)
+    tonlib = TonlibClient(lite_server_config, keystore=keystore)
 
     def detect_address(address):
         try:
@@ -95,7 +104,7 @@ def main():
       return g
 
     def address_state(account_info):
-      if len(account_info.get("code","")) == 0:
+      if isinstance(account_info.get("code",""), int) or len(account_info.get("code","")) == 0:
         if len(account_info.get("frozen_hash","")) == 0:
           return "uninitialized"
         else:
@@ -143,6 +152,12 @@ def main():
     async def getWalletInformation(request):
       address = prepare_address(request.query['address'])
       result = await tonlib.raw_get_account_state(address)
+      if not "@type" in result or result["@type"]=="error":
+        result = await tonlib.raw_get_account_state(address)
+      if not "@type" in result:
+        raise Exception("Unknown answer from lite server")
+      if result["@type"]=="error":
+        raise Exception(result["message"])
       res = {'wallet':False, 'balance': 0, 'account_state':None, 'wallet_type':None, 'seqno':None}
       res["account_state"] = address_state(result)
       res["balance"] = result["balance"] if (result["balance"] and int(result["balance"])>0) else 0
@@ -150,10 +165,10 @@ def main():
         res["last_transaction_id"] = result["last_transaction_id"]
       ci = sha256(result["code"])
       if ci in known_wallets:
-        res["wallet"] = True
-        wallet_handler = known_wallets[ci]
-        res["wallet_type"] = wallet_handler["type"]
-        wallet_handler["data_extractor"](res, result)
+          res["wallet"] = True
+          wallet_handler = known_wallets[ci]
+          res["wallet_type"] = wallet_handler["type"]
+          wallet_handler["data_extractor"](res, result)
       return res
 
     @routes.get('/getTransactions')
