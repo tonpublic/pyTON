@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import json
 from .tonlibjson import TonWrapper
 from .address_utils import prepare_address
-from tvm_valuetypes import serialize_tvm_stack, render_tvm_stack
+from tvm_valuetypes import serialize_tvm_stack, render_tvm_stack, deserialize_boc
 import functools
 
 def parallelize(f):
@@ -178,17 +178,27 @@ class TonlibClient:
       """
       if (from_transaction_lt==None) or (from_transaction_hash==None):
         addr = self._raw_get_account_state(account_address)
+        if '@type' in addr and addr['@type']=="error":
+          addr = self._raw_get_account_state(account_address)
+        if '@type' in addr and addr['@type']=="error":
+          raise Exception(addr["message"])
         try:
           from_transaction_lt, from_transaction_hash = int(addr["last_transaction_id"]["lt"]), b64str_hex(addr["last_transaction_id"]["hash"])
         except KeyError:
-          return []
+          raise "Can't get last_transaction_id data"
       reach_lt = False
       all_transactions = []
       current_lt, curret_hash = from_transaction_lt, from_transaction_hash
+      raw_transactions = {}
       while (not reach_lt) and (len(all_transactions)<limit):
         raw_transactions = self._raw_get_transactions(account_address, current_lt, curret_hash)
         if(raw_transactions['@type']) == 'error':
-          break
+          raw_transactions = self._raw_get_transactions(account_address, current_lt, curret_hash)
+          if(raw_transactions['@type']) == 'error':
+            if len(all_transactions):
+              break
+            else:
+              raise Exception(raw_transactions['message'] if 'message' in raw_transactions else 'Unknown error')
           #TODO probably we should chenge get_transactions API
           #if 'message' in raw_transactions['message']:
           #  raise Exception(raw_transactions['message'])
@@ -207,6 +217,37 @@ class TonlibClient:
           break
         if current_lt==0:
           break
+      for t in all_transactions:
+        try:
+          if "in_msg" in t:
+            if "source" in t["in_msg"]:
+              t["in_msg"]["source"] = t["in_msg"]["source"]["account_address"]
+            if "destination" in t["in_msg"]:
+              t["in_msg"]["destination"] = t["in_msg"]["destination"]["account_address"]
+            try:
+              if "msg_data" in t["in_msg"]:
+                msg_cell_boc = codecs.decode(codecs.encode(t["in_msg"]["msg_data"]["body"],'utf8'), 'base64')
+                message_cell = deserialize_boc(msg_cell_boc)
+                msg = message_cell.data.data.tobytes()
+                t["in_msg"]["message"] = codecs.decode(codecs.encode(msg,'base64'), "utf8")
+            except:
+              t["in_msg"]["message"]=""
+          if "out_msgs" in t:
+            for o in t["out_msgs"]:
+              if "source" in o:
+                o["source"] = o["source"]["account_address"]
+              if "destination" in o:
+                o["destination"] = o["destination"]["account_address"]
+              try:
+                if "msg_data" in o:
+                  msg_cell_boc = codecs.decode(codecs.encode(o["msg_data"]["body"],'utf8'), 'base64')
+                  message_cell = deserialize_boc(msg_cell_boc)
+                  msg = message_cell.data.data.tobytes()
+                  o["message"] = codecs.decode(codecs.encode(msg,'base64'), "utf8")
+              except:
+                 o["message"]=""
+        except Exception as e:
+          pass
       return all_transactions
 
     def _raw_get_account_state(self, address: str):
@@ -262,10 +303,10 @@ class TonlibClient:
                'account_address': {
                   'account_address': address
               }
-        }  
+        }
         r = self._t_local.tonlib_wrapper.ton_exec(data)
         self._t_local.loaded_contracts_num += 1
-        return r["id"]    
+        return r["id"]
 
     def _raw_run_method(self, address, method, stack_data, output_layout=None):
       """
