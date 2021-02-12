@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import json
 from .tonlibjson import TonWrapper
-from .address_utils import detect_address
+from .address_utils import prepare_address
 from tvm_valuetypes import serialize_tvm_stack, render_tvm_stack
 import functools
 
@@ -147,7 +147,7 @@ class TonlibClient:
                 'previous_transaction_id': internal.transactionId
             }
         """
-        account_address = detect_address(account_address)["bounceable"]["b64"]
+        account_address = prepare_address(account_address)
         from_transaction_hash = h2b64(from_transaction_hash)
 
         data = {
@@ -178,18 +178,22 @@ class TonlibClient:
       """
       if (from_transaction_lt==None) or (from_transaction_hash==None):
         addr = self._raw_get_account_state(account_address)
-        from_transaction_lt, from_transaction_hash = int(addr["last_transaction_id"]["lt"]), b64str_hex(addr["last_transaction_id"]["hash"])
+        try:
+          from_transaction_lt, from_transaction_hash = int(addr["last_transaction_id"]["lt"]), b64str_hex(addr["last_transaction_id"]["hash"])
+        except KeyError:
+          return []
       reach_lt = False
       all_transactions = []
       current_lt, curret_hash = from_transaction_lt, from_transaction_hash
       while (not reach_lt) and (len(all_transactions)<limit):
         raw_transactions = self._raw_get_transactions(account_address, current_lt, curret_hash)
-        print(raw_transactions, current_lt, curret_hash)
         if(raw_transactions['@type']) == 'error':
-          if message in raw_transactions['message']:
-            raise Exception(raw_transactions['message'])
-          else:
-            raise Exception("Can't get transactions")
+          break
+          #TODO probably we should chenge get_transactions API
+          #if 'message' in raw_transactions['message']:
+          #  raise Exception(raw_transactions['message'])
+          #else:
+          #  raise Exception("Can't get transactions")
         transactions, next = raw_transactions['transactions'], raw_transactions.get("previous_transaction_id", None)
         for t in transactions:
           tlt = int(t['transaction_id']['lt'])
@@ -221,7 +225,7 @@ class TonlibClient:
                 'sync_utime': int
             }
         """
-        account_address = detect_address(address)["bounceable"]["b64"]
+        account_address = prepare_address(address)
 
         data = {
             '@type': 'raw.getAccountState',
@@ -237,10 +241,22 @@ class TonlibClient:
     def raw_get_account_state(self, address: str):
       return self._raw_get_account_state(address)
 
+    @parallelize
+    def generic_get_account_state(self, address: str):
+        account_address = prepare_address(address)
+        data = {
+            '@type': 'generic.getAccountState',
+            'account_address': {
+                'account_address': address
+            }
+        }
+        r = self._t_local.tonlib_wrapper.ton_exec(data)
+        return r
+
     def _load_contract(self, address):
         if(self._t_local.loaded_contracts_num > 300):
           self.reload_tonlib()
-        account_address = detect_address(address)["bounceable"]["b64"]
+        account_address = prepare_address(address)
         data = {
               '@type': 'smc.load',
                'account_address': {
@@ -324,7 +340,7 @@ class TonlibClient:
       init_code = codecs.decode(codecs.encode(init_code, "base64"), 'utf-8').replace("\n",'')
       init_data = codecs.decode(codecs.encode(init_data, "base64"), 'utf-8').replace("\n",'')
       body = codecs.decode(codecs.encode(body, "base64"), 'utf-8').replace("\n",'')
-      destination = detect_address(destination)["bounceable"]["b64"]
+      destination = prepare_address(destination)
       data = {
         '@type': 'raw.createQuery',
         'body': body,
@@ -335,7 +351,6 @@ class TonlibClient:
         }
       }
       r = self._t_local.tonlib_wrapper.ton_exec(data)
-      print(r)
       return r
     
     def _raw_send_query(self, query_info): 
@@ -364,7 +379,7 @@ class TonlibClient:
       """
       initial_account_state = codecs.decode(codecs.encode(initial_account_state, "base64"), 'utf-8').replace("\n",'')
       body = codecs.decode(codecs.encode(body, "base64"), 'utf-8').replace("\n",'')
-      destination = detect_address(destination)["bounceable"]["b64"]
+      destination = prepare_address(destination)
       data = {
         '@type': 'raw.createAndSendMessage',
         'destination': {
@@ -377,3 +392,13 @@ class TonlibClient:
       return r
       #return ('@type' in r) and (r['@type']=="Ok")
 
+    @parallelize
+    def raw_estimate_fees(self, destination, body, init_code=b'', init_data=b'', ignore_chksig=True):
+      query_info = self._raw_create_query(destination, body, init_code, init_data)
+      data = {
+        '@type': 'query.estimateFees',
+        'id': query_info['id'],
+        'ignore_chksig': ignore_chksig
+      }
+      r = self._t_local.tonlib_wrapper.ton_exec(data)
+      return r
