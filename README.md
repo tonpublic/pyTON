@@ -1,3 +1,10 @@
+# This library version is archived
+
+Use https://github.com/EmelyanenkoK/pytonv3 instead
+
+================
+================
+
 # pyTON
 
 Python API for libtonlibjson (Telegram Open Network Light Client).
